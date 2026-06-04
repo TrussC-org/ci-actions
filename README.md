@@ -21,7 +21,27 @@ jobs:
     uses: TrussC-org/ci-actions/.github/workflows/build-addon.yml@v1
 ```
 
-That's it — no per-addon configuration in the common case. The workflow infers
+That's it — no per-addon configuration in the common case.
+
+### Which branches to run on
+
+The recommended default is **every branch** — so a push never silently skips CI
+and there's no "only `main`/`dev` are magic" surprise:
+
+```yaml
+on:
+  workflow_dispatch:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+```
+
+This is cheap: the slow part (building `trusscli`) is cached per repo and shared
+across branches (the default branch's cache is restorable by all branches), and
+`concurrency` cancels superseded runs. If a particular addon's CI is genuinely
+too heavy or low-value to run on every push, **narrow it** (opt-out), e.g.
+`branches: [main]`. The workflow infers
 everything from the repo:
 
 - **Addon name** = the repository name (override with `addon_name`).
