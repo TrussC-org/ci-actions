@@ -67,16 +67,21 @@ jobs:
           fi
           echo "platforms: $platforms"
 
-          # expand to a platform x config include list (desktop only)
+          # expand to a platform x config include list (desktop only).
+          # Each platform accepts a few token spellings (e.g. win == windows).
           configs='${{ inputs.configs }}'
           include='[]'
           for plat in macos windows linux; do
             case "$plat" in
-              macos)   runner="macos-14";;
-              windows) runner="windows-latest";;
-              linux)   runner="ubuntu-latest";;
+              macos)   runner="macos-14";      toks="macos osx";;
+              windows) runner="windows-latest"; toks="windows win";;
+              linux)   runner="ubuntu-latest";  toks="linux";;
             esac
-            if echo "$platforms" | jq -e --arg p "$plat" 'index($p) != null' >/dev/null; then
+            hit=0
+            for t in $toks; do
+              if echo "$platforms" | jq -e --arg p "$t" 'index($p) != null' >/dev/null; then hit=1; break; fi
+            done
+            if [ "$hit" = 1 ]; then
               for cfg in $(echo "$configs" | jq -r '.[]'); do
                 include=$(echo "$include" | jq -c \
                   --arg p "$plat" --arg r "$runner" --arg c "$cfg" \
