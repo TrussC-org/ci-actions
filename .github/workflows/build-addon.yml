@@ -1,0 +1,268 @@
+# Reusable workflow: build a TrussC addon (and its examples) across desktop
+# platforms, and run its optional tests/ harness.
+#
+# Conventions (no per-addon configuration needed in the common case):
+#   - addon name        = the calling repo's name (override with addon_name)
+#   - platforms         = addon.json "platforms" (default: macos/windows/linux;
+#                         web/android/ios are opt-in and not built yet)
+#   - examples          = every example-*/ directory is built
+#   - tests             = tests/ is built and run if present (non-zero = fail),
+#                         skipped if absent (opt-in by presence)
+#
+# Originally based on 2bbb/trussc-actions (MIT). See README / LICENSE.
+name: build-addon
+
+on:
+  workflow_call:
+    inputs:
+      trussc_ref:
+        description: 'TrussC ref (branch/tag/commit)'
+        type: string
+        default: 'main'
+      addon_name:
+        description: 'Addon dir name (default: caller repo name)'
+        type: string
+        default: ''
+      configs:
+        description: 'JSON array of build configs'
+        type: string
+        default: '["Release"]'
+      extra_apt_packages:
+        description: 'Extra Linux apt packages (space-separated)'
+        type: string
+        default: ''
+      extra_addons:
+        description: 'Extra addons to clone (space-separated: owner/repo name [owner/repo name]...)'
+        type: string
+        default: ''
+      cache_key_suffix:
+        description: 'Cache key suffix for busting'
+        type: string
+        default: 'v1'
+
+jobs:
+  # Resolve the build matrix from addon.json, detect the tests/ harness, and
+  # figure out the addon name — all without hardcoding anything in the caller.
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.gen.outputs.matrix }}
+      has_tests: ${{ steps.gen.outputs.has_tests }}
+      addon_name: ${{ steps.gen.outputs.addon_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: gen
+        shell: bash
+        run: |
+          name="${{ inputs.addon_name }}"
+          [ -z "$name" ] && name="${{ github.event.repository.name }}"
+          echo "addon_name=$name" >> "$GITHUB_OUTPUT"
+          echo "addon: $name"
+
+          # platforms: addon.json "platforms", default desktop trio
+          platforms='["macos","windows","linux"]'
+          if [ -f addon.json ]; then
+            p=$(jq -c '.platforms // empty' addon.json 2>/dev/null || true)
+            [ -n "$p" ] && [ "$p" != "null" ] && platforms="$p"
+          fi
+          echo "platforms: $platforms"
+
+          # expand to a platform x config include list (desktop only)
+          configs='${{ inputs.configs }}'
+          include='[]'
+          for plat in macos windows linux; do
+            case "$plat" in
+              macos)   runner="macos-14";;
+              windows) runner="windows-latest";;
+              linux)   runner="ubuntu-latest";;
+            esac
+            if echo "$platforms" | jq -e --arg p "$plat" 'index($p) != null' >/dev/null; then
+              for cfg in $(echo "$configs" | jq -r '.[]'); do
+                include=$(echo "$include" | jq -c \
+                  --arg p "$plat" --arg r "$runner" --arg c "$cfg" \
+                  '. + [{"platform":$p,"runner":$r,"config":$c}]')
+              done
+            fi
+          done
+          echo "matrix={\"include\":$include}" >> "$GITHUB_OUTPUT"
+          echo "matrix include: $include"
+
+          # tests are opt-in: present only if tests/ exists
+          if [ -d tests ]; then
+            echo "has_tests=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_tests=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          # warn (don't fail) about requested-but-unsupported platforms
+          for plat in web android ios; do
+            if echo "$platforms" | jq -e --arg p "$plat" 'index($p) != null' >/dev/null; then
+              echo "::warning::platform '$plat' requested but ci-actions builds desktop only for now; skipping"
+            fi
+          done
+
+  build:
+    needs: setup
+    if: ${{ fromJson(needs.setup.outputs.matrix).include[0] != null }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    name: build-${{ matrix.platform }} (${{ matrix.config }})
+    env:
+      ADDON_NAME: ${{ needs.setup.outputs.addon_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          path: ${{ needs.setup.outputs.addon_name }}
+
+      - name: Clone TrussC
+        run: git clone --depth 1 --branch ${{ inputs.trussc_ref }} https://github.com/TrussC-org/TrussC.git TrussC
+
+      - name: Link addon into TrussC (unix)
+        if: matrix.platform != 'windows'
+        run: ln -s "$GITHUB_WORKSPACE/$ADDON_NAME" "TrussC/addons/$ADDON_NAME"
+
+      - name: Link addon into TrussC (windows)
+        if: matrix.platform == 'windows'
+        run: New-Item -ItemType SymbolicLink -Path "TrussC\addons\$env:ADDON_NAME" -Target "$env:GITHUB_WORKSPACE\$env:ADDON_NAME"
+
+      - name: Clone extra addons
+        if: inputs.extra_addons != ''
+        shell: bash
+        run: |
+          read -ra ADDON_PAIRS <<< "${{ inputs.extra_addons }}"
+          for i in $(seq 0 2 $((${#ADDON_PAIRS[@]} - 1))); do
+            REPO="${ADDON_PAIRS[$i]}"
+            NAME="${ADDON_PAIRS[$((i+1))]}"
+            echo "Cloning extra addon: $NAME from $REPO"
+            git clone --depth 1 "https://github.com/$REPO.git" "TrussC/addons/$NAME"
+          done
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgtk-3-dev ${{ inputs.extra_apt_packages }}
+
+      - name: Install TrussC Linux dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          cd TrussC
+          chmod +x tools/install_dependencies_linux.sh
+          sudo ./tools/install_dependencies_linux.sh -y
+
+      - name: Setup MSVC
+        if: matrix.platform == 'windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Cache trusscli build
+        id: trusscli-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            TrussC/core/build-${{ matrix.platform }}
+            TrussC/tools/build
+            TrussC/tools/bin
+            TrussC/tools/trusscli.app
+          key: trusscli-${{ matrix.platform }}-${{ inputs.cache_key_suffix }}-${{ inputs.trussc_ref }}-${{ hashFiles('TrussC/tools/**', 'TrussC/core/**', 'TrussC/CMakeLists.txt') }}
+          restore-keys: |
+            trusscli-${{ matrix.platform }}-${{ inputs.cache_key_suffix }}-${{ inputs.trussc_ref }}-
+
+      - name: Check cached trusscli
+        id: trusscli-check
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/trusscli.app/Contents/MacOS/trusscli"
+          elif [ "${{ matrix.platform }}" = "windows" ]; then
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli.exe"
+          else
+            trusscli="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli"
+          fi
+          if [ -f "$trusscli" ]; then
+            [ "${{ matrix.platform }}" != "windows" ] && chmod +x "$trusscli"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build trusscli (macOS)
+        if: matrix.platform == 'macos' && steps.trusscli-check.outputs.exists != 'true'
+        run: |
+          cd TrussC
+          sed -i '' 's/read -r -p/#read -r -p/g' tools/build_mac.command
+          sed -i '' 's/open /#open /g' tools/build_mac.command
+          ./tools/build_mac.command
+
+      - name: Build trusscli (Windows)
+        if: matrix.platform == 'windows' && steps.trusscli-check.outputs.exists != 'true'
+        run: |
+          cd TrussC
+          ./tools/build_win.bat
+
+      - name: Build trusscli (Linux)
+        if: matrix.platform == 'linux' && steps.trusscli-check.outputs.exists != 'true'
+        run: |
+          cd TrussC
+          chmod +x tools/build_linux.sh
+          sed -i 's/read -r -p/#read -r -p/g' tools/build_linux.sh
+          sed -i 's|"$SCRIPT_DIR/trusscli"|#&|g' tools/build_linux.sh
+          ./tools/build_linux.sh
+
+      - name: Resolve trusscli path
+        shell: bash
+        run: |
+          if [ "${{ matrix.platform }}" = "macos" ]; then
+            t="$GITHUB_WORKSPACE/TrussC/tools/trusscli.app/Contents/MacOS/trusscli"
+          elif [ "${{ matrix.platform }}" = "windows" ]; then
+            t="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli.exe"
+          else
+            t="$GITHUB_WORKSPACE/TrussC/tools/bin/trusscli"
+          fi
+          [ "${{ matrix.platform }}" != "windows" ] && chmod +x "$t" || true
+          echo "TRUSSCLI=$t" >> "$GITHUB_ENV"
+
+      - name: Build examples
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/$ADDON_NAME"
+          shopt -s nullglob
+          examples=(example-*/)
+          if [ ${#examples[@]} -eq 0 ]; then
+            echo "no example-*/ directories; nothing to build"
+            exit 0
+          fi
+          for ex in "${examples[@]}"; do
+            ex="${ex%/}"
+            echo "::group::build $ex"
+            ( cd "$ex" && "$TRUSSCLI" update -p . && cmake --build "build-${{ matrix.platform }}" --config "${{ matrix.config }}" )
+            echo "::endgroup::"
+          done
+
+      - name: Build & run tests
+        if: needs.setup.outputs.has_tests == 'true'
+        shell: bash
+        run: |
+          cd "$GITHUB_WORKSPACE/$ADDON_NAME/tests"
+          "$TRUSSCLI" update -p .
+          cmake --build "build-${{ matrix.platform }}" --config "${{ matrix.config }}"
+          found=$(find . -type f \( -name tests -o -name tests.exe -o -name tests_debug \) \
+            \( -perm -u+x -o -perm -g+x -o -perm -o+x \) 2>/dev/null | head -1)
+          if [ -z "$found" ]; then
+            echo "::error::tests binary not found after build"
+            exit 1
+          fi
+          echo "Running: $found"
+          "$found"
+          code=$?
+          echo "exit code: $code"
+          if [ "$code" -ge 128 ]; then
+            echo "::error::tests crashed (signal, exit $code)"
+            exit 1
+          fi
+          if [ "$code" -ne 0 ]; then
+            echo "::error::tests failed (exit $code)"
+            exit 1
+          fi
