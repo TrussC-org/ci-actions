@@ -35,13 +35,19 @@ on:
     branches: ['**']
     tags: ['v*']
   pull_request:
+    branches: [main]
 ```
 
 This is cheap: the slow part (building `trusscli`) is cached per repo and shared
 across branches (the default branch's cache is restorable by all branches), and
 `concurrency` cancels superseded runs. If a particular addon's CI is genuinely
 too heavy or low-value to run on every push, **narrow it** (opt-out), e.g.
-`branches: [main]`. The workflow infers
+`branches: [main]`.
+
+`pull_request` is scoped to `main` on purpose: your own branches already build via
+`push: ['**']`, so the PR trigger is really there to cover **fork PRs** into
+`main` (a fork's commits don't fire `push` in this repo). Leaving it unfiltered
+would just double-run same-repo PRs. The workflow infers
 everything from the repo:
 
 - **Addon name** = the repository name (override with `addon_name`).
