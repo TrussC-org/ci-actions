@@ -60,6 +60,35 @@ Add a `tests/` directory containing a normal TrussC console project whose
 | `extra_apt_packages` | `""` | Extra Linux apt packages |
 | `extra_addons` | `""` | Extra addons to clone (`owner/repo name ...`) |
 | `cache_key_suffix` | `v1` | Bust the trusscli cache |
+| `setup_script` | `""` | Bash run before the build, for addons needing an external SDK (see below) |
+
+### External SDKs (`setup_script`)
+
+Hardware addons (depth cameras, capture devices, …) often need a vendor SDK that
+isn't an apt package. Pass a `setup_script`: a bash snippet that runs on **every**
+platform just before the build (after `trusscli` is ready, before any cmake
+configure). Branch on `$RUNNER_OS`, download/install the SDK, and export whatever
+the build needs via `$GITHUB_ENV`. CWD is the workspace root; the addon is checked
+out at `./$ADDON_NAME`.
+
+```yaml
+jobs:
+  build:
+    uses: TrussC-org/ci-actions/.github/workflows/build-addon.yml@v1
+    with:
+      setup_script: |
+        case "$RUNNER_OS" in
+          Linux)   url=".../SDK_linux_x64.tar.gz" ;;
+          macOS)   url=".../SDK_macos_arm64.tar.gz" ;;
+          Windows) url=".../SDK_windows.zip" ;;
+        esac
+        # download + extract into ./sdk ...
+        echo "CMAKE_PREFIX_PATH=$PWD/sdk/lib/cmake/MySDK" >> "$GITHUB_ENV"
+```
+
+Combine with `addon.json` `"platforms"` to drop platforms a SDK doesn't support
+(e.g. `["windows","linux"]` skips macOS). With no `tests/` directory, examples
+are built but not run — the right default when the addon needs real hardware.
 
 ## Credit
 

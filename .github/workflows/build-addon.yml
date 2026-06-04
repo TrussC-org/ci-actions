@@ -9,6 +9,10 @@
 #   - tests             = tests/ is built and run if present (non-zero = fail),
 #                         skipped if absent (opt-in by presence)
 #
+# Addons that need an external SDK (e.g. depth cameras) pass a `setup_script`
+# that downloads the SDK and exports env before the build; the common case
+# needs none of this.
+#
 # Originally based on 2bbb/trussc-actions (MIT). See README / LICENSE.
 name: build-addon
 
@@ -39,6 +43,16 @@ on:
         description: 'Cache key suffix for busting'
         type: string
         default: 'v1'
+      setup_script:
+        description: >-
+          Optional bash run just before the build (and on every platform), for
+          addons that need an external SDK. Branch on $RUNNER_OS, download /
+          install the SDK, and export anything the build needs (e.g.
+          "echo CMAKE_PREFIX_PATH=... >> $GITHUB_ENV"). CWD is the workspace
+          root; the addon is checked out at ./$ADDON_NAME. Default empty -> the
+          common case (no SDK) is unaffected.
+        type: string
+        default: ''
 
 jobs:
   # Resolve the build matrix from addon.json, detect the tests/ harness, and
@@ -228,6 +242,15 @@ jobs:
           fi
           [ "${{ matrix.platform }}" != "windows" ] && chmod +x "$t" || true
           echo "TRUSSCLI=$t" >> "$GITHUB_ENV"
+
+      # Optional, addon-provided SDK setup. Runs after trusscli is ready but
+      # before any cmake configure, so a downloaded SDK + exported env (e.g.
+      # CMAKE_PREFIX_PATH via $GITHUB_ENV) are visible to the example/test
+      # builds. Empty by default -> no-op for SDK-free addons.
+      - name: Addon SDK setup
+        if: inputs.setup_script != ''
+        shell: bash
+        run: ${{ inputs.setup_script }}
 
       - name: Build examples
         shell: bash
