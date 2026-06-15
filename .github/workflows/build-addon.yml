@@ -49,8 +49,10 @@ on:
           addons that need an external SDK. Branch on $RUNNER_OS, download /
           install the SDK, and export anything the build needs (e.g.
           "echo CMAKE_PREFIX_PATH=... >> $GITHUB_ENV"). CWD is the workspace
-          root; the addon is checked out at ./$ADDON_NAME. Default empty -> the
-          common case (no SDK) is unaffected.
+          root; the addon is checked out at ./$ADDON_NAME. $GITHUB_TOKEN /
+          $GH_TOKEN are available for authenticated api.github.com calls (avoids
+          the unauthenticated rate limit). Default empty -> the common case (no
+          SDK) is unaffected.
         type: string
         default: ''
 
@@ -250,6 +252,13 @@ jobs:
       - name: Addon SDK setup
         if: inputs.setup_script != ''
         shell: bash
+        # GITHUB_TOKEN is exported so the script can hit api.github.com
+        # authenticated (e.g. to resolve a release asset URL). Unauthenticated
+        # API calls share a 60-req/hour-per-IP budget that macOS runners
+        # routinely exhaust, which made SDK-download scripts fail macOS-only.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: ${{ inputs.setup_script }}
 
       - name: Build examples
