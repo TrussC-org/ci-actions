@@ -66,7 +66,7 @@ jobs:
       has_tests: ${{ steps.gen.outputs.has_tests }}
       addon_name: ${{ steps.gen.outputs.addon_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - id: gen
         shell: bash
         run: |
@@ -133,7 +133,7 @@ jobs:
     env:
       ADDON_NAME: ${{ needs.setup.outputs.addon_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           submodules: recursive
           path: ${{ needs.setup.outputs.addon_name }}
@@ -176,11 +176,16 @@ jobs:
 
       - name: Setup MSVC
         if: matrix.platform == 'windows'
+        # Pinned to v1: upstream's last release (v1.13.0, 2024) still targets
+        # Node 20, so it'll log the Node-20-deprecation warning. No Node-24
+        # release exists yet; swapping actions risks the Windows build, so we
+        # keep this until upstream updates or the forced-Node-24 cutover proves
+        # it broken.
         uses: ilammy/msvc-dev-cmd@v1
 
       - name: Cache trusscli build
         id: trusscli-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             TrussC/core/build-${{ matrix.platform }}
