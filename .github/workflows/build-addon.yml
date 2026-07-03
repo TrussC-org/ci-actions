@@ -183,6 +183,67 @@ jobs:
         # it broken.
         uses: ilammy/msvc-dev-cmd@v1
 
+      # -----------------------------------------------------------------------
+      # Compiler cache (ccache).
+      #
+      # Speeds up recompilation of FetchContent-built dependencies (OpenCV in
+      # tcxOpenCV/tcxAruco, Jolt in tcxPhysics, LibRaw in tcxLibRaw), TrussC
+      # core, and the addon/example code alike. Object-level, content-hashed,
+      # so it is immune to the timestamp churn that defeats plain build-dir
+      # caching (make/ninja rebuild on mtime skew even with restored objects).
+      #
+      # How it reaches the deps: cmake initializes CMAKE_<LANG>_COMPILER_LAUNCHER
+      # from the matching environment variable when a build tree is first
+      # configured. `trusscli update` runs `cmake --preset ...`, inheriting this
+      # env, and the launcher propagates into FetchContent add_subdirectory()
+      # deps. All three CI presets use Ninja/Unix Makefiles (never the Visual
+      # Studio generator), which honor compiler launchers — so MSVC is cached
+      # too (Release builds carry no /Zi PDB, so ccache's MSVC path applies).
+      #
+      # Cache-miss-safe: if ccache can't be installed or resolved, the launcher
+      # is simply not exported and the build proceeds uncached (a warning is
+      # logged). A restore miss is likewise harmless.
+      - name: Setup ccache
+        id: ccache-setup
+        shell: bash
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.ccache"
+          case "${{ matrix.platform }}" in
+            macos)   brew list ccache >/dev/null 2>&1 || brew install ccache || true ;;
+            linux)   sudo apt-get install -y ccache || true ;;
+            windows) choco install ccache -y --no-progress || true ;;
+          esac
+          if ! command -v ccache >/dev/null 2>&1; then
+            echo "::warning::ccache not available; building without compiler cache"
+            exit 0
+          fi
+          export CCACHE_DIR="$GITHUB_WORKSPACE/.ccache"
+          export CCACHE_MAXSIZE=2G
+          ccache --version | head -1
+          ccache -z >/dev/null 2>&1 || true
+          # Export for every subsequent step (trusscli build, example/test build).
+          # 2G (not the ~500M floor) because a single OpenCV build fills more than
+          # 500M of cached objects; lighter deps (Jolt/LibRaw) stay well under it.
+          {
+            echo "CCACHE_DIR=$GITHUB_WORKSPACE/.ccache"
+            echo "CCACHE_MAXSIZE=2G"
+            echo "CCACHE_BASEDIR=$GITHUB_WORKSPACE"
+            echo "CCACHE_COMPILERCHECK=content"
+            echo "CCACHE_SLOPPINESS=time_macros,include_file_ctime,include_file_mtime,locale,pch_defines"
+            echo "CMAKE_C_COMPILER_LAUNCHER=ccache"
+            echo "CMAKE_CXX_COMPILER_LAUNCHER=ccache"
+            echo "CCACHE_AVAILABLE=1"
+          } >> "$GITHUB_ENV"
+
+      - name: Cache ccache
+        uses: actions/cache@v5
+        with:
+          path: ${{ github.workspace }}/.ccache
+          key: ccache-${{ matrix.platform }}-${{ matrix.config }}-${{ inputs.cache_key_suffix }}-${{ inputs.trussc_ref }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-${{ matrix.platform }}-${{ matrix.config }}-${{ inputs.cache_key_suffix }}-${{ inputs.trussc_ref }}-
+            ccache-${{ matrix.platform }}-${{ matrix.config }}-${{ inputs.cache_key_suffix }}-
+
       - name: Cache trusscli build
         id: trusscli-cache
         uses: actions/cache@v5
@@ -308,3 +369,11 @@ jobs:
             echo "::error::tests failed (exit $code)"
             exit 1
           fi
+
+      # Auditable cache-hit evidence. On a warm run this should show a high
+      # cache-hit ratio (near 100% once trusscli is restored and only the deps
+      # + example recompile); a cold run shows ~all misses while it populates.
+      - name: ccache stats
+        if: always() && env.CCACHE_AVAILABLE == '1'
+        shell: bash
+        run: ccache -sv 2>/dev/null || ccache -s
