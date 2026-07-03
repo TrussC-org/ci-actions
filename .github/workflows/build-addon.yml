@@ -132,6 +132,16 @@ jobs:
     name: build-${{ matrix.platform }} (${{ matrix.config }})
     env:
       ADDON_NAME: ${{ needs.setup.outputs.addon_name }}
+      # All presets use single-config generators (Ninja / Unix Makefiles), which
+      # ignore `cmake --build --config`; without this the actual build type was
+      # trussc_app.cmake's RelWithDebInfo default regardless of matrix.config.
+      # CMake >= 3.22 seeds the CMAKE_BUILD_TYPE cache var from this env var at
+      # configure time, so the matrix config is what actually gets built. It
+      # also makes MSVC cacheable: RelWithDebInfo carries /Zi (external PDB),
+      # which ccache rejects ("unsupported compiler option"); Release compiles
+      # with /O2 /Ob2 /DNDEBUG and caches fine. (MSVC Debug configs still use
+      # /Zi and stay uncached — visible in the ccache stats step, not hidden.)
+      CMAKE_BUILD_TYPE: ${{ matrix.config }}
     steps:
       - uses: actions/checkout@v5
         with:
