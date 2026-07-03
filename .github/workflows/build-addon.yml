@@ -254,6 +254,14 @@ jobs:
             ccache-${{ matrix.platform }}-${{ matrix.config }}-${{ inputs.cache_key_suffix }}-${{ inputs.trussc_ref }}-
             ccache-${{ matrix.platform }}-${{ matrix.config }}-${{ inputs.cache_key_suffix }}-
 
+      # The stats files live inside the cache dir and are restored along with
+      # it; zero them here (after restore) so the end-of-job stats step reports
+      # THIS run's hits/misses, not cumulative history.
+      - name: Zero ccache stats
+        if: env.CCACHE_AVAILABLE == '1'
+        shell: bash
+        run: ccache -z
+
       - name: Cache trusscli build
         id: trusscli-cache
         uses: actions/cache@v5
