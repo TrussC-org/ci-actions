@@ -89,7 +89,7 @@ jobs:
           include='[]'
           for plat in macos windows linux; do
             case "$plat" in
-              macos)   runner="macos-14";      toks="macos osx";;
+              macos)   runner="macos-15";      toks="macos osx";;
               windows) runner="windows-latest"; toks="windows win";;
               linux)   runner="ubuntu-latest";  toks="linux";;
             esac
